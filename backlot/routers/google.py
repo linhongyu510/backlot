@@ -256,6 +256,20 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
     return Response(content=body, media_type=f'multipart/mixed; boundary="{_BATCH_BOUNDARY}"')
 
 
+def _drive_bearer_token(request: Request) -> str | None:
+    """Drive reads a credential only from exact, case-sensitive ``Bearer <token>``.
+
+    The shared parser is intentionally broader for GitHub's legacy ``token`` scheme and other
+    vendors. Measured on Drive on 2026-10-07, ``bearer``, ``BEARER`` and ``Token`` are all read as
+    no credential even when the token itself is valid."""
+    scheme, separator, token = (request.headers.get("authorization") or "").partition(" ")
+    return token.strip() if scheme == "Bearer" and separator and token.strip() else None
+
+
+def _drive_caller(request: Request) -> Caller | None:
+    return auth.acl(request).resolve(_drive_bearer_token(request))
+
+
 def _require(request: Request, *, download: bool = False) -> Caller:
     """The caller, or the error real Google gives — NOT the shared ``auth.require_bearer``, because
     Google's answer is not one status. Measured: a present-but-invalid bearer is 401 UNAUTHENTICATED
@@ -268,9 +282,15 @@ def _require(request: Request, *, download: bool = False) -> Caller:
     missing API key (:func:`gerr.missing_api_key`) instead of the anonymous GET's unregistered
     caller, and real puts it AFTER the download's own parameters — which is why the handlers
     resolve a download late."""
-    caller = auth.resolve_bearer(request)
+    header = request.headers.get("authorization")
+    drive = request.url.path.startswith("/drive/v3")
+    caller = _drive_caller(request) if drive else auth.resolve_bearer(request)
     if caller is None:
-        if not request.headers.get("authorization"):
+        if drive and header and not _drive_bearer_token(request):
+            if download:
+                raise gerr.download_invalid_credentials()
+            raise gerr.no_credentials(request.url.path, request.method)
+        if not header:
             if download:
                 raise gerr.missing_api_key()
             raise gerr.no_credentials(request.url.path, request.method)
@@ -284,8 +304,7 @@ def _sends_a_bearer_token(request: Request) -> bool:
     (`_require_download_bearer`) and as a batch part (`_drive_batch_redirect`). Narrower than
     ``auth.bearer_token``, which `_require` reads a credential with and which also takes `bearer`,
     `BEARER` and `token`."""
-    scheme, _, token = (request.headers.get("authorization") or "").partition(" ")
-    return scheme == "Bearer" and bool(token.strip())
+    return _drive_bearer_token(request) is not None
 
 
 def _require_download_bearer(request: Request) -> None:
@@ -297,7 +316,7 @@ def _require_download_bearer(request: Request) -> None:
     `token nope`, a bare `Bearer`, `bearer`, `nope` and `Basic YWJjOmRlZg==` each answer the
     callback's 503. Every other value is left to :func:`gerr.refuse_download`, and without a
     `callback` is `_require`'s to answer."""
-    if _sends_a_bearer_token(request) and auth.resolve_bearer(request) is None:
+    if _sends_a_bearer_token(request) and _drive_caller(request) is None:
         raise gerr.bad_token()
 
 

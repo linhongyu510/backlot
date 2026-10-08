@@ -3175,6 +3175,64 @@ def test_the_refusal_order_on_a_download_is_system_bearer_then_callback(client, 
             assert client.get(url, params=params, headers=headers).status_code == 401, (kind, value)
 
 
+@pytest.mark.parametrize(
+    "authorization",
+    [
+        "bearer {token}",
+        "BEARER {token}",
+        "Token {token}",
+        "Basic YWJjOmRlZg==",
+        "bearer nope",
+        "Bearer",
+        "nope",
+        "Token nope",
+    ],
+)
+def test_drive_reads_only_an_exact_bearer_credential(client, admin_h, authorization):
+    """Drive reads only the exact ``Bearer <token>`` scheme. Other header values behave like no
+    credential on metadata routes and use the download-specific short 401 on byte streams."""
+    token = admin_h["Authorization"].split(" ", 1)[1]
+    headers = {"Authorization": authorization.format(token=token)}
+    requests = _download_requests(client, admin_h)
+    metadata_url, metadata_params = requests["metadata"]
+    metadata = [
+        ("/drive/v3/files", {}),
+        (metadata_url, metadata_params),
+        ("/drive/v3/about", {"fields": "user"}),
+    ]
+    for url, params in metadata:
+        expected = client.get(url, params=params)
+        actual = client.get(url, params=params, headers=headers)
+        assert (actual.status_code, actual.content) == (expected.status_code, expected.content), url
+
+    for kind in ("media", "export"):
+        url, params = requests[kind]
+        response = client.get(url, params=params, headers=headers)
+        assert response.status_code == 401, (kind, authorization)
+        error = response.json()["error"]
+        assert error["message"] == "Invalid Credentials"
+        assert error["errors"] == [
+            {
+                "message": "Invalid Credentials",
+                "domain": "global",
+                "reason": "authError",
+                "location": "Authorization",
+                "locationType": "header",
+            }
+        ]
+        assert "status" not in error
+
+
+@pytest.mark.parametrize("kind", ["media", "export", "metadata"])
+def test_drive_keeps_a_bad_exact_bearer_as_invalid_token(client, admin_h, kind):
+    """A syntactically valid Bearer credential that does not resolve remains the long 401."""
+    requests = _download_requests(client, admin_h)
+    url, params = requests[kind]
+    response = client.get(url, params=params, headers={"Authorization": "Bearer nope"})
+    assert response.status_code == 401
+    assert response.json()["error"]["status"] == "UNAUTHENTICATED"
+
+
 def test_a_download_is_the_route_not_the_path_shape(client, admin_h):
     """Measured 2026-10-07: an export asking for `alt=json` is not a download but an ordinary read
     -- the unregistered-caller 403 without a credential, the wrapped `callback` 400 with one -- and

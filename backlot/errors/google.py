@@ -438,6 +438,20 @@ def bad_token() -> GoogleError:
     )
 
 
+def download_invalid_credentials() -> GoogleError:
+    """A Drive byte-stream read received an Authorization value other than exact
+    ``Bearer <token>``. Measured 2026-10-07: the top-level message is the short sentence, the
+    usual authError entry remains, and ``status`` is absent."""
+    return GoogleError(
+        401,
+        "Invalid Credentials",
+        reason="authError",
+        location="Authorization",
+        location_type="header",
+        short="Invalid Credentials",
+    )
+
+
 def missing_credentials() -> GoogleError:
     """No Authorization header, on an OAuth-only API (Gmail, Docs, Slides), or on a POST to any
     of the five.
